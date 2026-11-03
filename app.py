@@ -3,14 +3,13 @@ EcoCycle Energy Hub — Three-Class Material Classification Prototype
 
 """
 
-from datetime import datetime
 from pathlib import Path
-import csv
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import tensorflow as tf
+from supabase import create_client
 from PIL import Image
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
@@ -28,7 +27,7 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_ecocycle_3class_model.keras"
-LOG_PATH = BASE_DIR / "data" / "classification_log.csv"
+SUPABASE_TABLE = "classification_scans"
 
 IMAGE_SIZE = (224, 224)
 CLASS_NAMES = ["PET", "HDPEM", "OTHER"]
@@ -641,12 +640,12 @@ def predict_image(image, loaded_model):
 
 
 # ============================================================
-# LOCAL CLASSIFICATION HISTORY
+# SUPABASE DATABASE — SHARED CLASSIFICATION HISTORY
 # ============================================================
 
-LOG_COLUMNS = [
+HISTORY_COLUMNS = [
     "timestamp",
-    "filename",
+    "input_method",
     "predicted_class",
     "confidence",
     "pet_probability",
@@ -655,41 +654,77 @@ LOG_COLUMNS = [
 ]
 
 
-def load_history():
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    if not LOG_PATH.exists():
-        return pd.DataFrame(columns=LOG_COLUMNS)
-
+@st.cache_resource
+def get_supabase_client():
+    """Create one reusable Supabase client from Streamlit secrets."""
     try:
-        history = pd.read_csv(LOG_PATH)
-        for column in LOG_COLUMNS:
-            if column not in history.columns:
-                history[column] = None
-        return history[LOG_COLUMNS]
-    except (pd.errors.EmptyDataError, pd.errors.ParserError):
-        return pd.DataFrame(columns=LOG_COLUMNS)
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        if not url or not key:
+            return None
+        return create_client(url, key)
+    except Exception:
+        return None
 
 
-def save_prediction(filename, predicted_class, confidence, probabilities):
-    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+def load_history():
+    """Read all scan rows from Supabase in pages."""
+    client = get_supabase_client()
+    if client is None:
+        raise RuntimeError(
+            "Supabase is not configured. Add SUPABASE_URL and SUPABASE_KEY "
+            "to .streamlit/secrets.toml before using scan history."
+        )
+
+    rows = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            client.table(SUPABASE_TABLE)
+            .select("id, created_at, input_method, predicted_class, confidence, "
+                    "pet_probability, hdpem_probability, other_probability")
+            .order("created_at", desc=True)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    if not rows:
+        return pd.DataFrame(columns=HISTORY_COLUMNS)
+
+    history = pd.DataFrame(rows).rename(columns={"created_at": "timestamp"})
+    return history[HISTORY_COLUMNS]
+
+
+def save_prediction(source_name, predicted_class, confidence, probabilities):
+    """Save a classification result to the shared Supabase table."""
+    client = get_supabase_client()
+    if client is None:
+        raise RuntimeError(
+            "Supabase is not configured. Add SUPABASE_URL and SUPABASE_KEY "
+            "to .streamlit/secrets.toml."
+        )
+
+    # Store only whether the image came from the camera or an upload.
+    # The original image and local filename are not uploaded or retained.
+    input_method = "camera" if source_name == "camera_capture.jpg" else "upload"
 
     record = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "filename": filename,
+        "input_method": input_method,
         "predicted_class": predicted_class,
-        "confidence": round(confidence, 2),
-        "pet_probability": round(probabilities["PET"], 2),
-        "hdpem_probability": round(probabilities["HDPEM"], 2),
-        "other_probability": round(probabilities["OTHER"], 2),
+        "confidence": round(float(confidence), 2),
+        "pet_probability": round(float(probabilities["PET"]), 2),
+        "hdpem_probability": round(float(probabilities["HDPEM"]), 2),
+        "other_probability": round(float(probabilities["OTHER"]), 2),
     }
 
-    file_exists = LOG_PATH.exists()
-    with LOG_PATH.open("a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=LOG_COLUMNS)
-        if not file_exists or csv_file.tell() == 0:
-            writer.writeheader()
-        writer.writerow(record)
+    client.table(SUPABASE_TABLE).insert(record).execute()
 
 
 # ============================================================
@@ -735,7 +770,12 @@ page = page or "Home"
 # LOAD HISTORY AND MODEL
 # ============================================================
 
-history = load_history()
+history_error = None
+try:
+    history = load_history()
+except Exception as error:
+    history = pd.DataFrame(columns=HISTORY_COLUMNS)
+    history_error = str(error)
 
 try:
     model = load_model()
@@ -801,7 +841,7 @@ if page == "Home":
             ("Test accuracy", TEST_ACCURACY, "Held-out evaluation dataset", "green"),
             ("Classification classes", "3", "PET, HDPEM and OTHER", "teal"),
             ("Test images", TEST_IMAGE_COUNT, "Images in the held-out test set", ""),
-            ("Images analysed", len(history), "Local scan history", ""),
+            ("Images analysed", len(history), "Shared database records", ""),
         ]),
         unsafe_allow_html=True,
     )
@@ -916,13 +956,6 @@ elif page == "AI Scanner":
                             image, model
                         )
 
-                    save_prediction(
-                        source_name,
-                        predicted_class,
-                        confidence,
-                        probabilities,
-                    )
-
                     st.session_state["latest_prediction"] = {
                         "class": predicted_class,
                         "confidence": confidence,
@@ -930,6 +963,17 @@ elif page == "AI Scanner":
                         "source": source_name,
                     }
                     st.session_state["last_analysed_image"] = image_key
+
+                    try:
+                        save_prediction(
+                            source_name,
+                            predicted_class,
+                            confidence,
+                            probabilities,
+                        )
+                        st.session_state["latest_save_status"] = "saved"
+                    except Exception as database_error:
+                        st.session_state["latest_save_status"] = str(database_error)
                 except Exception as error:
                     st.error(f"Could not analyse this image: {error}")
 
@@ -956,6 +1000,11 @@ elif page == "AI Scanner":
                     st.progress(min(max(score / 100, 0.0), 1.0))
 
                 st.success(CLASS_GUIDANCE[predicted_class])
+                save_status = st.session_state.get("latest_save_status")
+                if save_status == "saved":
+                    st.caption("Scan result saved to the shared EcoCycle database.")
+                elif save_status:
+                    st.warning(f"This result was analysed but not saved to the shared database: {save_status}")
                 st.caption(
                     "The confidence score is the model's estimated probability, "
                     "not a guarantee. The model selects one of its three trained classes."
@@ -969,10 +1018,16 @@ elif page == "Dashboard":
 
     head(
         "Classification Dashboard",
-        "A local record of images analysed by the EcoCycle Hub prototype.",
+        "Shared scan records submitted by users of EcoCycle Hub.",
     )
 
-    if history.empty:
+    refresh_col, _ = st.columns([1, 5])
+    refresh_col.button("Refresh dashboard", on_click=st.rerun, use_container_width=True)
+
+    if history_error:
+        st.error(f"Unable to load shared scan history: {history_error}")
+        st.info("Check your Supabase connection and database table setup.")
+    elif history.empty:
         st.markdown(
             '<div class="decision idle">No scans recorded yet. '
             'Open the AI Scanner and analyse an image to begin.</div>',
@@ -1009,6 +1064,8 @@ elif page == "Dashboard":
             "timestamp", ascending=False
         )
         st.dataframe(display_history, hide_index=True, use_container_width=True)
+
+        st.caption("Only classification results are stored. Original images and personal filenames are not saved.")
 
         st.download_button(
             "Download scan history (CSV)",
