@@ -1,6 +1,10 @@
 """
 EcoCycle Energy Hub — Three-Class Material Classification Prototype
 
+Run:
+    streamlit run app.py
+
+Keep best_ecocycle_3class_model.keras in the same folder as this file.
 """
 
 from pathlib import Path
@@ -27,6 +31,7 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_ecocycle_3class_model.keras"
+ASSET_DIR = BASE_DIR / "assets"
 SUPABASE_TABLE = "classification_scans"
 
 IMAGE_SIZE = (224, 224)
@@ -79,7 +84,7 @@ ORANGE = "#F59E0B"
 INK = "#0F172A"
 MUTED = "#64748B"
 EDGE = "#E2E8F0"
-BG = "#F8FAFC"
+BG = "#F3F6EF"
 
 
 # ============================================================
@@ -98,7 +103,10 @@ html, body, .stApp {{
 
 .stApp, [data-testid="stAppViewContainer"],
 [data-testid="stMain"], .main {{
-    background: {BG} !important;
+    background:
+        radial-gradient(ellipse at 8% 4%, rgba(34,197,94,.10), transparent 28%),
+        radial-gradient(ellipse at 92% 18%, rgba(15,118,110,.09), transparent 25%),
+        linear-gradient(180deg, #F7F8F1 0%, #EEF4EE 55%, #F7F8F1 100%) !important;
     color: {INK} !important;
 }}
 
@@ -164,8 +172,9 @@ header, [data-testid="stHeader"], [data-testid="stToolbar"],
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    background: #fff;
-    border: 1px solid {EDGE};
+    background: rgba(255,255,255,.88);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(20,83,45,.12);
     border-radius: 14px;
     padding: 10px 16px;
     margin-bottom: 8px;
@@ -268,7 +277,12 @@ header, [data-testid="stHeader"], [data-testid="stToolbar"],
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    background: linear-gradient(135deg, {FOREST_DARK} 0%, #166534 52%, {TEAL} 100%);
+    background:
+        radial-gradient(circle at 82% 22%, rgba(255,255,255,.16), transparent 22%),
+        radial-gradient(circle at 10% 100%, rgba(34,197,94,.24), transparent 35%),
+        linear-gradient(125deg, #092F24 0%, #14532D 48%, #0F766E 100%);
+    border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 18px 45px rgba(9,47,36,.18);
     border-radius: 20px;
     padding: 34px 36px;
     margin: 4px 0 18px 0;
@@ -348,8 +362,8 @@ header, [data-testid="stHeader"], [data-testid="stToolbar"],
 }}
 
 .kpi {{
-    background: #fff;
-    border: 1px solid {EDGE};
+    background: rgba(255,255,255,.92);
+    border: 1px solid rgba(20,83,45,.10);
     border-radius: 16px;
     padding: 16px 18px;
     box-shadow: 0 1px 2px rgba(15,31,46,.04);
@@ -417,6 +431,45 @@ header, [data-testid="stHeader"], [data-testid="stToolbar"],
     box-shadow: 0 12px 26px rgba(15,31,46,.08);
     border-color: #8CCFC5;
 }}
+
+
+/* Smart sorting system showcase */
+.system-intro {{
+    background: linear-gradient(120deg, #103D2C, #0F766E);
+    color: #F4FFF8;
+    border-radius: 20px;
+    padding: 25px 28px;
+    margin: 8px 0 18px 0;
+    box-shadow: 0 14px 34px rgba(15, 76, 58, .16);
+}}
+.system-intro h3 {{ color: #FFFFFF !important; margin: 0 0 8px 0; }}
+.system-intro p {{ color: #D8F2E6 !important; margin: 0; line-height: 1.6; }}
+.system-stage {{
+    background: rgba(255,255,255,.9);
+    border: 1px solid #D7E6DB;
+    border-radius: 16px;
+    padding: 15px 16px;
+    min-height: 138px;
+    box-shadow: 0 5px 18px rgba(20,83,45,.05);
+}}
+.system-stage .stage-no {{
+    color: #0F766E; font-size: .78rem; font-weight: 800;
+    letter-spacing: .12em; margin-bottom: 7px;
+}}
+.system-stage b {{ color: #123B2D; display:block; margin-bottom:6px; }}
+.system-stage p {{ color: #52665A; font-size: .9rem; line-height:1.5; margin:0; }}
+.reference-label {{
+    display:inline-block; background:#E7F4EC; color:#14532D;
+    border:1px solid #C5E2CF; border-radius:999px;
+    padding:4px 9px; font-size:.72rem; font-weight:800;
+    letter-spacing:.04em; margin: 5px 0 8px 0;
+}}
+.machine-note {{
+    background:#FFF8E8; border:1px solid #F2D79A; color:#684B12;
+    border-radius:13px; padding:13px 16px; margin:12px 0 18px 0;
+    font-size:.91rem; line-height:1.55;
+}}
+
 
 /* Numbered process cards on the How it works page */
 .flow {{
@@ -667,8 +720,13 @@ def get_supabase_client():
         return None
 
 
+@st.cache_data(ttl=30, show_spinner=False)
 def load_history():
-    """Read all scan rows from Supabase in pages."""
+    """Read scan history from Supabase and cache it for 30 seconds.
+
+    Streamlit reruns the script during navigation. Caching prevents every
+    page switch from triggering a full database download.
+    """
     client = get_supabase_client()
     if client is None:
         raise RuntimeError(
@@ -725,6 +783,8 @@ def save_prediction(source_name, predicted_class, confidence, probabilities):
     }
 
     client.table(SUPABASE_TABLE).insert(record).execute()
+    # Ensure the next dashboard/history read includes this new scan.
+    load_history.clear()
 
 
 # ============================================================
@@ -740,7 +800,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-PAGES = ["Home", "AI Scanner", "Dashboard", "How it works", "About"]
+PAGES = ["Home", "AI Scanner", "Dashboard", "How it works", "Smart Sorting System", "About"]
 
 if "nav" not in st.session_state or st.session_state.nav not in PAGES:
     st.session_state.nav = "Home"
@@ -777,12 +837,14 @@ except Exception as error:
     history = pd.DataFrame(columns=HISTORY_COLUMNS)
     history_error = str(error)
 
-try:
-    model = load_model()
-    model_error = None
-except Exception as error:
-    model = None
-    model_error = str(error)
+model = None
+model_error = None
+
+if page == "AI Scanner":
+    try:
+        model = load_model()
+    except Exception as error:
+        model_error = str(error)
 
 
 # ============================================================
@@ -800,7 +862,7 @@ if page == "Home":
         unsafe_allow_html=True,
     )
 
-    b1, b2, _ = st.columns([1, 1, 3])
+    b1, b2, b3, _ = st.columns([1, 1, 1.45, 1.55])
     b1.button(
         "Open AI Scanner",
         type="primary",
@@ -811,6 +873,11 @@ if page == "Home":
         "How it works",
         use_container_width=True,
         on_click=lambda: st.session_state.update({"nav": "How it works"}),
+    )
+    b3.button(
+        "Physical sorting concept",
+        use_container_width=True,
+        on_click=lambda: st.session_state.update({"nav": "Smart Sorting System"}),
     )
 
     sec("Our Digital Prototype")
@@ -1022,7 +1089,11 @@ elif page == "Dashboard":
     )
 
     refresh_col, _ = st.columns([1, 5])
-    refresh_col.button("Refresh dashboard", on_click=st.rerun, use_container_width=True)
+    def refresh_dashboard():
+        load_history.clear()
+        st.rerun()
+
+    refresh_col.button("Refresh dashboard", on_click=refresh_dashboard, use_container_width=True)
 
     if history_error:
         st.error(f"Unable to load shared scan history: {history_error}")
@@ -1109,6 +1180,123 @@ elif page == "How it works":
             card("MobileNetV2", "Image classification architecture.", "CV"),
         ]),
         unsafe_allow_html=True,
+    )
+
+
+
+# ============================================================
+# SMART SORTING SYSTEM — PROPOSED PHYSICAL INTEGRATION
+# ============================================================
+
+elif page == "Smart Sorting System":
+
+    head("From AI classification to smart sorting",
+         "A proposed pathway from today's image-classification prototype to a future sorting line.")
+
+    st.markdown(
+        '<div class="system-intro">'
+        '<h3>One model. A future sorting line.</h3>'
+        '<p>EcoCycle’s current prototype classifies a photo as PET, HDPEM or OTHER. '
+        'The concept below shows how that software could become one part of a physical '
+        'sorting system: a camera captures each item, the model predicts its material, '
+        'and a future control system could direct it to the appropriate collection stream.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    sec("How the proposed machine could work")
+    stage_cols = st.columns(4)
+    stages = [
+        ("01 / FEED", "Conveyor and item feed",
+         "Mixed recyclable items move along a conveyor in a controlled, spaced-out flow."),
+        ("02 / CAPTURE", "Camera inspection",
+         "A fixed camera captures an image of each item as it passes the inspection point."),
+        ("03 / CLASSIFY", "EcoCycle AI model",
+         "The current MobileNetV2 model analyses the image and predicts PET, HDPEM or OTHER."),
+        ("04 / SEPARATE", "Future sorting mechanism",
+         "A controller could trigger a gate, air jet or diverter to guide the item into a collection bin."),
+    ]
+    for col, (number, title, description) in zip(stage_cols, stages):
+        with col:
+            st.markdown(
+                f'<div class="system-stage"><div class="stage-no">{number}</div>'
+                f'<b>{title}</b><p>{description}</p></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        '<div class="machine-note"><strong>Prototype boundary:</strong> '
+        'The current EcoCycle application performs image-based classification only. '
+        'It does not yet connect to a live conveyor camera, PLC, motor, air jet or physical diverter. '
+        'The machine stages shown here are a proposed integration concept, not hardware built by EcoCycle.</div>',
+        unsafe_allow_html=True,
+    )
+
+    sec("What industrial sorting equipment looks like")
+    st.caption(
+        "These are real-world industry reference photographs to help illustrate the physical environment. "
+        "They are not photographs of EcoCycle equipment."
+    )
+
+    image_col1, image_col2 = st.columns(2, gap="large")
+    with image_col1:
+        image_file = ASSET_DIR / "recycling_conveyor.jpg"
+        if image_file.exists():
+            st.image(str(image_file), use_container_width=True)
+        else:
+            st.warning("Add assets/recycling_conveyor.jpg to display this industry reference photo.")
+        st.markdown('<span class="reference-label">INDUSTRY REFERENCE · CONVEYOR SORTING</span>',
+                    unsafe_allow_html=True)
+        st.markdown("**Conveyor-based material handling**")
+        st.caption("A conveyor moves material through an organised sorting area, where inspection and separation equipment can be installed.")
+
+    with image_col2:
+        image_file = ASSET_DIR / "sorting_facility.jpg"
+        if image_file.exists():
+            st.image(str(image_file), use_container_width=True)
+        else:
+            st.warning("Add assets/sorting_facility.jpg to display this industry reference photo.")
+        st.markdown('<span class="reference-label">INDUSTRY REFERENCE · SORTING FACILITY</span>',
+                    unsafe_allow_html=True)
+        st.markdown("**A material recovery facility**")
+        st.caption("Industrial facilities combine conveyors and different separation stages to recover useful materials from mixed waste.")
+
+    image_col3, image_col4 = st.columns(2, gap="large")
+    with image_col3:
+        image_file = ASSET_DIR / "waste_conveyor.jpg"
+        if image_file.exists():
+            st.image(str(image_file), use_container_width=True)
+        else:
+            st.warning("Add assets/waste_conveyor.jpg to display this industry reference photo.")
+        st.markdown('<span class="reference-label">INDUSTRY REFERENCE · WASTE CONVEYOR</span>',
+                    unsafe_allow_html=True)
+        st.markdown("**Material moving towards inspection**")
+        st.caption("A conveyor can present items to a camera or sensor at a defined inspection point.")
+
+    with image_col4:
+        st.markdown(
+            '<div class="system-stage" style="min-height:260px;display:flex;flex-direction:column;justify-content:center;'
+            'background:linear-gradient(145deg,#E8F4EA,#DCEFEA);">'
+            '<div class="stage-no">FUTURE ECOCYCLE CONCEPT</div>'
+            '<h3 style="color:#123B2D !important;">Camera → AI → Controller → Collection bins</h3>'
+            '<p style="color:#52665A;">The software model provides the material prediction. A separate hardware-control layer '
+            'would translate that prediction into a timed physical action.</p></div>',
+            unsafe_allow_html=True,
+        )
+
+    sec("Where the current prototype fits")
+    st.markdown(
+        card_grid([
+            card("Available now", "Upload or capture one image in the Streamlit app. The trained model returns PET, HDPEM or OTHER with class probabilities.", "AI"),
+            card("Next engineering step", "Connect a fixed camera to an edge computer and run the classifier on images captured at the conveyor inspection point.", "CAM"),
+            card("Future hardware step", "Add timing, tracking and a controller that can trigger a diverter or actuator after the item is classified.", "PLC"),
+        ], wide=True),
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "The model's image prediction is the software foundation. Reliable physical sorting would still require "
+        "camera calibration, item tracking, conveyor timing, actuator control, safety systems and testing on real moving waste."
     )
 
 
