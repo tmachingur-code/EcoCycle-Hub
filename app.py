@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import tensorflow as tf
-from supabase import create_client
 from PIL import Image
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
@@ -32,7 +31,6 @@ st.set_page_config(
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_ecocycle_3class_model.keras"
 ASSET_DIR = BASE_DIR / "assets"
-SUPABASE_TABLE = "classification_scans"
 
 IMAGE_SIZE = (224, 224)
 CLASS_NAMES = ["PET", "HDPEM", "OTHER"]
@@ -693,98 +691,37 @@ def predict_image(image, loaded_model):
 
 
 # ============================================================
-# SUPABASE DATABASE — SHARED CLASSIFICATION HISTORY
+# SESSION-BASED CLASSIFICATION HISTORY
 # ============================================================
 
 HISTORY_COLUMNS = [
-    "timestamp",
-    "input_method",
-    "predicted_class",
-    "confidence",
-    "pet_probability",
-    "hdpem_probability",
-    "other_probability",
+    "timestamp", "input_method", "predicted_class", "confidence",
+    "pet_probability", "hdpem_probability", "other_probability",
 ]
 
 
-@st.cache_resource
-def get_supabase_client():
-    """Create one reusable Supabase client from Streamlit secrets."""
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-        if not url or not key:
-            return None
-        return create_client(url, key)
-    except Exception:
-        return None
+def initialise_history():
+    if "scan_history" not in st.session_state:
+        st.session_state.scan_history = []
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def load_history():
-    """Read scan history from Supabase and cache it for 30 seconds.
-
-    Streamlit reruns the script during navigation. Caching prevents every
-    page switch from triggering a full database download.
-    """
-    client = get_supabase_client()
-    if client is None:
-        raise RuntimeError(
-            "Supabase is not configured. Add SUPABASE_URL and SUPABASE_KEY "
-            "to .streamlit/secrets.toml before using scan history."
-        )
-
-    rows = []
-    page_size = 1000
-    start = 0
-
-    while True:
-        response = (
-            client.table(SUPABASE_TABLE)
-            .select("id, created_at, input_method, predicted_class, confidence, "
-                    "pet_probability, hdpem_probability, other_probability")
-            .order("created_at", desc=True)
-            .range(start, start + page_size - 1)
-            .execute()
-        )
-        batch = response.data or []
-        rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        start += page_size
-
-    if not rows:
-        return pd.DataFrame(columns=HISTORY_COLUMNS)
-
-    history = pd.DataFrame(rows).rename(columns={"created_at": "timestamp"})
-    return history[HISTORY_COLUMNS]
+def get_history():
+    initialise_history()
+    return pd.DataFrame(st.session_state.scan_history, columns=HISTORY_COLUMNS)
 
 
 def save_prediction(source_name, predicted_class, confidence, probabilities):
-    """Save a classification result to the shared Supabase table."""
-    client = get_supabase_client()
-    if client is None:
-        raise RuntimeError(
-            "Supabase is not configured. Add SUPABASE_URL and SUPABASE_KEY "
-            "to .streamlit/secrets.toml."
-        )
-
-    # Store only whether the image came from the camera or an upload.
-    # The original image and local filename are not uploaded or retained.
+    initialise_history()
     input_method = "camera" if source_name == "camera_capture.jpg" else "upload"
-
-    record = {
+    st.session_state.scan_history.append({
+        "timestamp": pd.Timestamp.now().isoformat(),
         "input_method": input_method,
         "predicted_class": predicted_class,
         "confidence": round(float(confidence), 2),
         "pet_probability": round(float(probabilities["PET"]), 2),
         "hdpem_probability": round(float(probabilities["HDPEM"]), 2),
         "other_probability": round(float(probabilities["OTHER"]), 2),
-    }
-
-    client.table(SUPABASE_TABLE).insert(record).execute()
-    # Ensure the next dashboard/history read includes this new scan.
-    load_history.clear()
+    })
 
 
 # ============================================================
@@ -800,7 +737,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-PAGES = ["Home", "AI Scanner", "Dashboard", "How it works", "Smart Sorting System", "About"]
+PAGES = ["Home", "AI Scanner", "Dashboard", "Impact", "How it works", "Smart Sorting System", "About"]
 
 if "nav" not in st.session_state or st.session_state.nav not in PAGES:
     st.session_state.nav = "Home"
@@ -827,15 +764,11 @@ page = page or "Home"
 
 
 # ============================================================
-# LOAD HISTORY AND MODEL
+# SESSION HISTORY AND MODEL
 # ============================================================
 
-history_error = None
-try:
-    history = load_history()
-except Exception as error:
-    history = pd.DataFrame(columns=HISTORY_COLUMNS)
-    history_error = str(error)
+initialise_history()
+history = get_history()
 
 model = None
 model_error = None
@@ -885,17 +818,17 @@ if page == "Home":
         card_grid([
             card(
                 "PET Classification",
-                "Identify PET packaging, including commonly used beverage bottles.",
+                "Identify PET packaging such as beverage bottles.",
                 "PET",
             ),
             card(
                 "HDPEM Classification",
-                "Recognise high-density polyethylene packaging such as milk containers.",
+                "Identify HDPE milk packaging.",
                 "HD",
             ),
             card(
                 "Other Materials",
-                "Identify examples such as glass and aluminium as part of the OTHER category.",
+                "Classify materials outside the two target plastic categories.",
                 "OTH",
             ),
         ]),
@@ -908,7 +841,7 @@ if page == "Home":
             ("Test accuracy", TEST_ACCURACY, "Held-out evaluation dataset", "green"),
             ("Classification classes", "3", "PET, HDPEM and OTHER", "teal"),
             ("Test images", TEST_IMAGE_COUNT, "Images in the held-out test set", ""),
-            ("Images analysed", len(history), "Shared database records", ""),
+            ("Images analysed", len(history), "Scans in this session", ""),
         ]),
         unsafe_allow_html=True,
     )
@@ -923,17 +856,17 @@ if page == "Home":
         card_grid([
             card(
                 "AI-assisted identification",
-                "Uses computer vision to estimate the material category from an uploaded image.",
+                "Classifies an uploaded or captured image.",
                 "🤖",
             ),
             card(
                 "Material awareness",
-                "Helps distinguish PET and HDPEM plastics from the OTHER category.",
+                "Separates predictions into three trained classes.",
                 "🔎",
             ),
             card(
                 "Circular economy focus",
-                "Explores how better material identification can support recyclable material recovery.",
+                "Supports better plastic recovery workflows.",
                 "🌱",
             ),
         ]),
@@ -957,7 +890,7 @@ elif page == "AI Scanner":
 
     head(
         "AI Material Scanner",
-        "Take a photo of a material or choose an image from your device.",
+        "Capture or upload a material image for AI classification.",
     )
 
     if model_error:
@@ -969,13 +902,13 @@ elif page == "AI Scanner":
     with left:
         sec("Capture material")
         camera_file = st.camera_input(
-            "Point your camera at the material and take a photo",
+            "Capture a material image",
             key="material_camera",
         )
 
-        st.caption("Prefer to use an existing image?")
+        st.caption("Or upload an image")
         uploaded_file = st.file_uploader(
-            "Choose an image",
+            "Upload image",
             type=["jpg", "jpeg", "png"],
             key="material_upload",
         )
@@ -995,7 +928,7 @@ elif page == "AI Scanner":
                 image = Image.open(image_source).convert("RGB")
                 st.image(
                     image,
-                    caption="Image ready for identification",
+                    caption="Image ready for scanning",
                     use_container_width=True,
                 )
             except Exception:
@@ -1007,8 +940,8 @@ elif page == "AI Scanner":
         if image is None:
             st.markdown(
                 '<div class="card"><div class="ib">READY</div>'
-                '<div class="c-title">Ready to identify a material</div>'
-                '<p>Take a photo with your camera. The model will analyse it automatically.</p></div>',
+                '<div class="c-title">Ready to scan</div>'
+                '<p>Capture or upload an image to see its predicted category.</p></div>',
                 unsafe_allow_html=True,
             )
         else:
@@ -1031,16 +964,13 @@ elif page == "AI Scanner":
                     }
                     st.session_state["last_analysed_image"] = image_key
 
-                    try:
-                        save_prediction(
-                            source_name,
-                            predicted_class,
-                            confidence,
-                            probabilities,
-                        )
-                        st.session_state["latest_save_status"] = "saved"
-                    except Exception as database_error:
-                        st.session_state["latest_save_status"] = str(database_error)
+                    save_prediction(
+                        source_name,
+                        predicted_class,
+                        confidence,
+                        probabilities,
+                    )
+                    st.session_state["latest_save_status"] = "saved"
                 except Exception as error:
                     st.error(f"Could not analyse this image: {error}")
 
@@ -1069,9 +999,9 @@ elif page == "AI Scanner":
                 st.success(CLASS_GUIDANCE[predicted_class])
                 save_status = st.session_state.get("latest_save_status")
                 if save_status == "saved":
-                    st.caption("Scan result saved to the shared EcoCycle database.")
+                    st.caption("Scan saved for this session.")
                 elif save_status:
-                    st.warning(f"This result was analysed but not saved to the shared database: {save_status}")
+                    st.warning(f"This result was analysed but not saved: {save_status}")
                 st.caption(
                     "The confidence score is the model's estimated probability, "
                     "not a guarantee. The model selects one of its three trained classes."
@@ -1085,20 +1015,18 @@ elif page == "Dashboard":
 
     head(
         "Classification Dashboard",
-        "Shared scan records submitted by users of EcoCycle Hub.",
+        "Your scan results from this session.",
     )
 
     refresh_col, _ = st.columns([1, 5])
     def refresh_dashboard():
-        load_history.clear()
         st.rerun()
 
     refresh_col.button("Refresh dashboard", on_click=refresh_dashboard, use_container_width=True)
 
-    if history_error:
-        st.error(f"Unable to load shared scan history: {history_error}")
-        st.info("Check your Supabase connection and database table setup.")
-    elif history.empty:
+    history = get_history()
+
+    if history.empty:
         st.markdown(
             '<div class="decision idle">No scans recorded yet. '
             'Open the AI Scanner and analyse an image to begin.</div>',
@@ -1112,7 +1040,7 @@ elif page == "Dashboard":
 
         st.markdown(
             kpi_grid([
-                ("Images analysed", total_scans, "All saved image scans", "green"),
+                ("Images analysed", total_scans, "This session", "green"),
                 ("PET predictions", pet_count, "Predicted as PET", "teal"),
                 ("HDPEM predictions", hdpem_count, "Predicted as HDPEM", ""),
                 ("OTHER predictions", other_count, "Predicted as OTHER", ""),
@@ -1136,7 +1064,7 @@ elif page == "Dashboard":
         )
         st.dataframe(display_history, hide_index=True, use_container_width=True)
 
-        st.caption("Only classification results are stored. Original images and personal filenames are not saved.")
+        st.caption("History is session-based. Download your CSV before ending the session.")
 
         st.download_button(
             "Download scan history (CSV)",
@@ -1147,17 +1075,62 @@ elif page == "Dashboard":
 
 
 # ============================================================
+# IMPACT PAGE
+# ============================================================
+
+elif page == "Impact":
+
+    head("Our potential impact", "Better identification. Better recovery.")
+
+    st.markdown(
+        '<div class="system-intro">'
+        '<h3>From identification to resource recovery</h3>'
+        '<p>EcoCycle Hub aims to help plastic recovery operators identify materials '
+        'more consistently. Real-world impact will be measured through testing.</p>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        card_grid([
+            card("Support sorting", "Identify PET and HDPE milk packaging from images.", "SORT"),
+            card("Build material awareness", "Make plastic categories easier to recognise.", "AI"),
+            card("Enable recovery", "Support workflows that keep recyclable materials in circulation.", "CIRC"),
+        ]),
+        unsafe_allow_html=True,
+    )
+
+    sec("How we will measure impact")
+    stages = [
+        ("01 / ACCURACY", "Real-world images", "Test different lighting, angles and backgrounds."),
+        ("02 / USABILITY", "Operator feedback", "Assess fit with existing sorting workflows."),
+        ("03 / OUTCOMES", "Pilot evaluation", "Measure identification time and sorting consistency."),
+    ]
+
+    cols = st.columns(3)
+    for col, (number, title, description) in zip(cols, stages):
+        with col:
+            st.markdown(
+                f'<div class="system-stage"><div class="stage-no">{number}</div>'
+                f'<b>{title}</b><p>{description}</p></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.caption("These are intended outcomes and future evaluation measures, not results already achieved.")
+
+
+# ============================================================
 # HOW IT WORKS PAGE
 # ============================================================
 
 elif page == "How it works":
 
-    head("How it works", "Three simple steps to identify a material.")
+    head("How it works", "Capture. Classify. Review.")
 
     steps = [
-        ("01", "Take a photo", "Capture the material with your phone camera."),
-        ("02", "AI identifies it", "The model classifies the image as PET, HDPEM or OTHER."),
-        ("03", "View your result", "See the predicted material and its confidence score."),
+        ("01", "Take a photo", "Take or upload a photo."),
+        ("02", "AI identifies it", "AI predicts PET, HDPEM or OTHER."),
+        ("03", "View your result", "View the result and confidence score."),
     ]
 
     st.markdown(
@@ -1313,7 +1286,7 @@ elif page == "About":
         card_grid([
             card(
                 "EcoCycle Energy Hub",
-                "A circular-economy initiative exploring how accessible technology can help identify recyclable materials and support resource recovery in communities.",
+                "Using accessible technology to support recyclable material identification and recovery.",
                 "ECO",
             ),
         ], wide=True),
@@ -1324,12 +1297,12 @@ elif page == "About":
         card_grid([
             card(
                 "Our mission",
-                "Turn urban waste into sustainable value by exploring practical technology for material identification and recovery.",
+                "Support smarter material identification and resource recovery.",
                 "MIS",
             ),
             card(
                 "Our vision",
-                "A cleaner, more resilient Africa where waste is recognised as a resource, not simply a problem.",
+                "A circular economy where waste is treated as a resource.",
                 "VIS",
             ),
         ], wide=True),
@@ -1385,7 +1358,7 @@ elif page == "About":
 
 st.markdown(
     '<div class="appfoot"><strong style="color:#166534;">EcoCycle Energy Hub</strong>'
-    '<br>AI-powered material identification for a circular economy.'
+    '<br>AI-powered plastic identification.'
     '</div>',
     unsafe_allow_html=True,
 )
