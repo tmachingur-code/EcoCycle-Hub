@@ -3,7 +3,7 @@ import streamlit as st
 from textwrap import dedent
 
 from components.layout import page_heading, section
-from config.settings import TEST_ACCURACY, TEST_IMAGE_COUNT
+from config.settings import ASSET_DIR, TEST_ACCURACY, TEST_IMAGE_COUNT
 
 
 def render():
@@ -19,56 +19,61 @@ def render():
 
     stages = [
         (
-            "01",
             "Upload an image",
-            "Upload a clear JPG, JPEG or PNG image of the material you want to identify."
+            "Upload a clear JPG, JPEG or PNG image of the material you want to identify.",
+            ["step_upload.png", "01_upload_an_image.png"]
         ),
         (
-            "02",
             "Image preprocessing",
-            "The image is converted to RGB, resized to 224 × 224 pixels and prepared for the neural network."
+            "The image is converted to RGB, resized to 224 × 224 pixels and prepared for the neural network.",
+            ["step_preprocessing.png", "02_image_preprocessing.png"]
         ),
         (
-            "03",
             "AI material classification",
-            "MobileNetV2 analyses the complete image and estimates its PET, HDPEM or OTHER probability."
+            "MobileNetV2 analyses the complete image and estimates its PET, HDPEM or OTHER probability.",
+            ["step_classification.png", "03_ai_material_classification.png"]
         ),
         (
-            "04",
             "Prediction and confidence",
-            "EcoCycle displays the predicted material, confidence score and probability distribution."
+            "EcoCycle displays the predicted material, confidence score and probability distribution.",
+            ["step_prediction.png", "04_prediction_and_confidence.png"]
         ),
         (
-            "05",
             "Review and record",
-            "Review the recommendation and explore your classification history in the dashboard."
+            "Review the recommendation and explore your classification history in the dashboard.",
+            ["step_review.png", "05_review_and_record.png"]
         ),
     ]
 
-    for number, title, description in stages:
+    
+    for index, (title, description, filenames) in enumerate(stages, start=1):
 
-        st.html(dedent(f"""
-            <div class="panel" style="
-                margin-bottom:12px;
-                display:flex;
-                gap:18px;
-                align-items:flex-start;
-            ">
-                <div class="brand-mark" style="
-                    flex:0 0 46px;
-                    font-size:15px;
-                ">
-                    {number}
-                </div>
+        image_path = next(
+            (
+                ASSET_DIR / filename
+                for filename in filenames
+                if (ASSET_DIR / filename).exists()
+            ),
+            None
+        )
 
-                <div>
-                    <h3 style="margin:0 0 5px;">{title}</h3>
-                    <p style="margin:0; color:#6b7b70;">
-                        {description}
-                    </p>
-                </div>
-            </div>
-        """))
+        with st.container(border=True):
+
+            image_col, text_col = st.columns([1, 3], gap="medium")
+
+            with image_col:
+                if image_path:
+                    st.image(
+                        str(image_path),
+                        width=160
+                    )
+                else:
+                    st.warning(f"Image {index} not found in assets.")
+
+            with text_col:
+                st.markdown(f"**{index:02d} · {title}**")
+                st.write(description)
+
 
     # 02. MODEL EXPLANATION
     section("INSIDE THE AI MODEL")
