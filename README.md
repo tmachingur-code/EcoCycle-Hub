@@ -52,7 +52,7 @@ Use Python 3.10 or 3.11 in a virtual environment.
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/tmachingur-code/EcoCycle-Hub
 cd EcoCycle_Energy_Hub
 ```
 
